@@ -1,76 +1,182 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
-# 1. ตั้งค่าหน้าเว็บ
-st.set_page_config(page_title="Epidemic Curve Generator", layout="wide")
-st.title("🦠 Epidemic Curve Generator")
+# --- 1. CONFIGURATION ---
+st.set_page_config(
+    page_title="Epidemic Curve Generator",
+    page_icon="🦠",
+    layout="wide"
+)
 
-# 2. ส่วนอัปโหลดไฟล์
-uploaded_file = st.file_uploader("อัปโหลดไฟล์ Excel หรือ CSV", type=['csv', 'xlsx'])
-
-if uploaded_file is not None:
-    # โหลดข้อมูล
+# --- 2. HELPER FUNCTIONS ---
+def load_data(file):
+    """ฟังก์ชันโหลดข้อมูล รองรับทั้ง CSV และ Excel"""
     try:
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
+        if file.name.endswith('.csv'):
+            return pd.read_csv(file)
         else:
-            df = pd.read_excel(uploaded_file)
-        
-        st.success("โหลดข้อมูลสำเร็จ!")
-        
-        # 3. การตั้งค่ากราฟ (Sidebar)
-        st.sidebar.header("ตั้งค่ากราฟ")
-        
-        # เลือกคอลัมน์วันที่
-        date_col = st.sidebar.selectbox("เลือกคอลัมน์ 'วันที่เริ่มป่วย'", df.columns)
-        
-        # แปลงเป็น datetime
-        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-        df = df.dropna(subset=[date_col]) # ตัดแถวที่ไม่มีวันที่ทิ้ง
-        
-        # เลือกคอลัมน์สำหรับแบ่งสี (Optional)
-        category_col = st.sidebar.selectbox("แบ่งสีตาม (Optional)", [None] + list(df.columns))
-        
-        # เลือกช่วงเวลา (Binning)
-        time_interval = st.sidebar.radio("ช่วงเวลา (Time Unit)", ["Day", "Week", "Month"])
-        
-        # 4. Logic การสร้าง Epi Curve
-        # สร้างคอลัมน์ใหม่ตามช่วงเวลาเพื่อ Group data
-        if time_interval == "Day":
-            df['period'] = df[date_col].dt.to_period('D').dt.to_timestamp()
-        elif time_interval == "Week":
-            # ปรับให้เริ่มวันอาทิตย์หรือจันทร์ตามหลักระบาดวิทยาได้
-            df['period'] = df[date_col].dt.to_period('W').dt.to_timestamp()
-        elif time_interval == "Month":
-            df['period'] = df[date_col].dt.to_period('M').dt.to_timestamp()
-
-        # นับจำนวนเคส
-        if category_col:
-            chart_data = df.groupby(['period', category_col]).size().reset_index(name='cases')
-            # Plotly Chart แบบ Stacked
-            fig = px.bar(chart_data, x='period', y='cases', color=category_col, 
-                         title=f"Epidemic Curve by {time_interval}",
-                         labels={'period': 'Date of Onset', 'cases': 'Number of Cases'})
-        else:
-            chart_data = df.groupby(['period']).size().reset_index(name='cases')
-            # Plotly Chart แบบปกติ
-            fig = px.bar(chart_data, x='period', y='cases', 
-                         title=f"Epidemic Curve by {time_interval}",
-                         labels={'period': 'Date of Onset', 'cases': 'Number of Cases'})
-
-        # ปรับแต่งกราฟให้ช่องว่างระหว่างแท่งสวยงาม (Gap)
-        fig.update_layout(bargap=0.1)
-        
-        # 5. แสดงผล
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # แสดงตารางข้อมูลสรุป
-        with st.expander("ดูข้อมูลดิบ (Raw Data)"):
-            st.dataframe(df)
-
+            return pd.read_excel(file)
     except Exception as e:
-        st.error(f"เกิดข้อผิดพลาด: {e}")
+        st.error(f"Error loading file: {e}")
+        return None
+
+def find_date_column(columns):
+    """พยายามเดาชื่อคอลัมน์วันที่"""
+    keywords = ['date', 'onset', 'time', 'วัน', 'เริ่มป่วย', 'report']
+    for col in columns:
+        if any(keyword in col.lower() for keyword in keywords):
+            return col
+    return columns[0]  # ถ้าหาไม่เจอ ให้คืนค่าคอลัมน์แรก
+
+# --- 3. MAIN UI ---
+st.title("🦠 Interactive Epidemic Curve Generator")
+st.markdown("""
+เครื่องมือสร้างกราฟระบาดวิทยา (Epi Curve) อัตโนมัติ 
+รองรับไฟล์ .xlsx และ .csv | พัฒนาโดย Streamlit
+""")
+st.divider()
+
+# Sidebar: Upload & Settings
+with st.sidebar:
+    st.header("1. นำเข้าข้อมูล (Import Data)")
+    uploaded_file = st.file_uploader("Upload Excel/CSV", type=['xlsx', 'csv'])
+    
+    st.header("2. ตั้งค่ากราฟ (Settings)")
+
+if uploaded_file:
+    df = load_data(uploaded_file)
+    
+    if df is not None:
+        # --- PREPROCESSING ---
+        # 1. เลือกคอลัมน์วันที่
+        all_cols = list(df.columns)
+        default_date_col = find_date_column(all_cols)
+        
+        date_col = st.sidebar.selectbox(
+            "เลือกคอลัมน์ 'วันที่เริ่มป่วย' (Date of Onset)", 
+            all_cols, 
+            index=all_cols.index(default_date_col)
+        )
+        
+        # แปลงข้อมูลเป็น Datetime
+        try:
+            df[date_col] = pd.to_datetime(df[date_col], dayfirst=True, errors='coerce')
+            # ตัดแถวที่วันที่เป็น NaT (อ่านไม่ออก) ทิ้ง
+            missing_dates = df[date_col].isna().sum()
+            if missing_dates > 0:
+                st.sidebar.warning(f"⚠️ พบข้อมูลวันที่ไม่สมบูรณ์ {missing_dates} แถว (ถูกตัดออก)")
+            df = df.dropna(subset=[date_col])
+        except Exception as e:
+            st.error(f"ไม่สามารถแปลงคอลัมน์ {date_col} เป็นวันที่ได้: {e}")
+            st.stop()
+
+        # 2. ตัวเลือก Grouping (แบ่งสี)
+        st.sidebar.subheader("การจัดกลุ่ม (Grouping)")
+        group_col = st.sidebar.selectbox(
+            "แบ่งสีตาม (Optional)", 
+            ["None"] + [c for c in all_cols if c != date_col]
+        )
+        if group_col == "None": group_col = None
+
+        # 3. ช่วงเวลา (Time Interval)
+        interval = st.sidebar.select_slider(
+            "ความละเอียดเวลา (Time Unit)",
+            options=["Daily", "Weekly", "Monthly"],
+            value="Daily"
+        )
+        
+        # --- DATA PROCESSING FOR CHART ---
+        # สร้างคอลัมน์ 'Period' เพื่อใช้ Group ข้อมูล
+        if interval == "Daily":
+            df['Period'] = df[date_col].dt.date
+            x_title = "Date (Daily)"
+            hover_fmt = "%d %b %Y"
+        elif interval == "Weekly":
+            # ปรับให้เป็นวันแรกของสัปดาห์ (วันอาทิตย์หรือจันทร์)
+            df['Period'] = df[date_col].dt.to_period('W').dt.start_time
+            x_title = "Week Starting"
+            hover_fmt = "Week of %d %b %Y"
+        elif interval == "Monthly":
+            df['Period'] = df[date_col].dt.to_period('M').dt.start_time
+            x_title = "Month"
+            hover_fmt = "%b %Y"
+
+        # --- VISUALIZATION ---
+        
+        # Layout แบ่ง 2 คอลัมน์ (ซ้ายกราฟ ขวาตารางสรุป)
+        col_main, col_stat = st.columns([3, 1])
+        
+        with col_main:
+            st.subheader(f"📈 Epidemic Curve ({interval})")
+            
+            # ใช้ Plotly Histogram ซึ่งจัดการเรื่อง Binning และ Stack ได้ดีเยี่ยม
+            if group_col:
+                fig = px.histogram(
+                    df, 
+                    x='Period', 
+                    color=group_col,
+                    nbins=len(df['Period'].unique()) if interval != 'Daily' else None,
+                    title=f"Epidemic Curve by {group_col}",
+                    labels={'Period': x_title, 'count': 'Cases'},
+                    template="plotly_white"
+                )
+            else:
+                fig = px.histogram(
+                    df, 
+                    x='Period',
+                    title="Epidemic Curve (Total Cases)",
+                    labels={'Period': x_title, 'count': 'Cases'},
+                    template="plotly_white"
+                )
+
+            # ปรับแต่งกราฟให้เหมือน Epi Curve มาตรฐาน
+            fig.update_layout(
+                bargap=0.05,  # ช่องว่างระหว่างแท่งเล็กน้อย (ถ้า 0 คือติดกันเลย)
+                xaxis_title=x_title,
+                yaxis_title="Number of Cases",
+                xaxis=dict(
+                    type='date', # บังคับแกน X เป็นเวลา
+                    tickformat="%d %b" if interval == "Daily" else "%d %b %y"
+                )
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_stat:
+            st.subheader("📋 สรุปข้อมูล")
+            total_cases = len(df)
+            first_case = df[date_col].min().strftime('%d %b %Y')
+            last_case = df[date_col].max().strftime('%d %b %Y')
+            
+            st.metric("Total Cases", f"{total_cases:,}")
+            st.markdown(f"**First Case:** {first_case}")
+            st.markdown(f"**Last Case:** {last_case}")
+            
+            # Export Data Button
+            if group_col:
+                summary_df = df.groupby(['Period', group_col]).size().reset_index(name='Cases')
+            else:
+                summary_df = df.groupby(['Period']).size().reset_index(name='Cases')
+            
+            st.dataframe(summary_df, hide_index=True, use_container_width=True)
+            
+            # CSV Download Logic
+            csv = summary_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Summary CSV",
+                data=csv,
+                file_name='epi_curve_data.csv',
+                mime='text/csv',
+            )
 
 else:
-    st.info("กรุณาอัปโหลดไฟล์เพื่อเริ่มต้น")
+    # หน้าจอตอนยังไม่ Upload ไฟล์
+    st.info("👈 กรุณาอัปโหลดไฟล์ข้อมูลทางด้านซ้ายมือ เพื่อเริ่มต้นใช้งาน")
+    st.markdown("""
+    ### รูปแบบไฟล์ที่รองรับ:
+    * **Excel (.xlsx) หรือ CSV (.csv)**
+    * ต้องมีคอลัมน์ **"วันที่"** อย่างน้อย 1 คอลัมน์ (เช่น Date of Onset)
+    * (Optional) คอลัมน์อื่นๆ สำหรับแบ่งกลุ่ม เช่น เพศ, อำเภอ, สถานะ
+    """)
